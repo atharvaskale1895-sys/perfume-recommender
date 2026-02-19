@@ -1,13 +1,60 @@
 import re
 import streamlit as st
-from typing import TypedDict, List, Dict
+from typing import TypedDict, List
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(
+    page_title="AURA Fragrance AI",
+    page_icon="💎",
+    layout="wide"
+)
 
+# ---------------- UI ----------------
+st.markdown("""
+<style>
+.stApp {
+    background: linear-gradient(-45deg,#f3e7ff,#ffffff,#ece6ff,#f7edff);
+    background-size: 400% 400%;
+    animation: gradient 12s ease infinite;
+}
+@keyframes gradient {
+  0% {background-position:0% 50%;}
+  50% {background-position:100% 50%;}
+  100% {background-position:0% 50%;}
+}
+
+.main-title {
+    text-align:center;
+    font-size:48px;
+    font-weight:bold;
+    color:#4B0082;
+}
+
+.card {
+    background: rgba(255,255,255,0.85);
+    padding:20px;
+    border-radius:15px;
+    box-shadow:0px 8px 20px rgba(0,0,0,0.1);
+    margin-bottom:15px;
+}
+
+.stButton>button {
+    background:#4B0082;
+    color:white;
+    border-radius:10px;
+    font-weight:bold;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------- STATE ----------------
 class PerfumeState(TypedDict):
     messages: List[HumanMessage | AIMessage]
+    gender: str
+    fragrance_type: str
     sweat_level: int
     perfume_strength: int
     preferred_scents: str
@@ -18,136 +65,124 @@ class PerfumeState(TypedDict):
     recommendation: str
 
 
-# Define the LLM
+# ---------------- LLM ----------------
 llm = ChatGroq(
     temperature=0,
-    groq_api_key="gsk_xxxxxxxxxxxxxxxxxxxxxxxx",
+    groq_api_key="gsk_xxxxxxxxxxxxxxxxxxxxxxxxxx",
     model_name="llama-3.3-70b-versatile"
 )
 
-# Define the perfume recommendation prompt
+# ---------------- PROMPT ----------------
 perfume_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are a helpful perfume recommendation assistant. Show Indian perfume brands along with their buying links and prices using the provided information, suggest:\n"
-     "1. A list of perfumes that match the user's preferences.\n"
-     "2. A brief description of each perfume's scent profile.\n"
-     "3. Recommendations based on the user's sweat level, preferred strength, and other inputs.\n\n"
-     "Use the following inputs (some might be missing):\n"
-     "Sweat Level: {sweat_level}/10, Perfume Strength: {perfume_strength}/10, Preferred Scents: {preferred_scents}, "
-     "Occasion: {occasion}, Budget: {budget}, Skin Type: {skin_type}, Additional Notes: {additional_notes}."
-     ),
-    ("human", "Recommend perfumes based on my preferences."),
+     """
+You are a professional perfume recommendation assistant.
+
+Rules:
+- Recommend 6 to 8 perfumes.
+- Only suggest perfumes commonly available on Amazon India or Flipkart.
+- Keep output SHORT.
+
+Format EXACTLY like:
+
+1. Perfume Name
+Price: ₹...
+Notes: ...
+Best For: ...
+
+"""),
+    ("human",
+     """Gender: {gender}
+Fragrance Type: {fragrance_type}
+Sweat Level: {sweat_level}
+Perfume Strength: {perfume_strength}
+Preferred Scents: {preferred_scents}
+Occasion: {occasion}
+Budget: {budget}
+Skin Type: {skin_type}
+Additional Notes: {additional_notes}
+""")
 ])
 
-
-# Helper Functions
-def process_optional_inputs(state: PerfumeState) -> PerfumeState:
-    """Fill in default values for optional inputs."""
-    state["sweat_level"] = state["sweat_level"] if state["sweat_level"] else 5
-    state["perfume_strength"] = state["perfume_strength"] if state["perfume_strength"] else 5
-    state["preferred_scents"] = state["preferred_scents"] if state["preferred_scents"] else "none"
-    state["occasion"] = state["occasion"] if state["occasion"] else "casual"
-    state["budget"] = state["budget"] if state["budget"] else "moderate"
-    state["skin_type"] = state["skin_type"] if state["skin_type"] else "normal"
+# ---------------- HELPERS ----------------
+def process_optional_inputs(state):
+    state["preferred_scents"] = state["preferred_scents"] or "fresh"
     state["additional_notes"] = state["additional_notes"] or "none"
     return state
 
 
-def create_recommendation(state: PerfumeState) -> str:
-    """Generate a detailed perfume recommendation."""
+def create_recommendation(state):
     response = llm.invoke(
         perfume_prompt.format_messages(
-            sweat_level=state['sweat_level'],
-            perfume_strength=state['perfume_strength'],
-            preferred_scents=state['preferred_scents'],
-            occasion=state['occasion'],
-            budget=state['budget'],
-            skin_type=state['skin_type'],
-            additional_notes=state['additional_notes']
+            gender=state["gender"],
+            fragrance_type=state["fragrance_type"],
+            sweat_level=state["sweat_level"],
+            perfume_strength=state["perfume_strength"],
+            preferred_scents=state["preferred_scents"],
+            occasion=state["occasion"],
+            budget=state["budget"],
+            skin_type=state["skin_type"],
+            additional_notes=state["additional_notes"],
         )
     )
-    state["recommendation"] = response.content
-    state["messages"] += [AIMessage(content=response.content)]
     return response.content
 
 
-# Function to extract perfume names, links, and prices from the recommendation text
-def extract_perfume_info(recommendation: str) -> List[Dict[str, str]]:
-    """Extract perfume names, links, and prices from the recommendation text."""
-    perfume_info = []
-    pattern = r"(\b[\w\s]+\b) by ([\w\s]+):.*?Price: ([\d,]+).*?(https?://\S+)"
-    matches = re.findall(pattern, recommendation)
-
-    for match in matches:
-        perfume_name, brand, price, link = match
-        perfume_info.append({
-            "name": f"{perfume_name} by {brand}",
-            "price": f"Price: ₹{price}",
-            "link": link
-        })
-
-    return perfume_info
+# ---------------- PARSER ----------------
+def parse_perfumes(text):
+    pattern = r"\d+\.\s*(.*?)\nPrice:\s*(.*?)\nNotes:\s*(.*?)\nBest For:\s*(.*?)(?=\n\d+\.|\Z)"
+    return re.findall(pattern, text, re.S)
 
 
-# Function to display links for recommended perfumes
-def display_perfume_links(recommendation: str):
-    """Display links for recommended perfumes based on the ChatGroq output."""
-    # Extract perfume names, links, and prices
-    perfume_info = extract_perfume_info(recommendation)
-
-    if not perfume_info:
-        st.write("No links found in the recommendation.")
-        return
-
-    # Display links for each recommended perfume
-    st.subheader("Buy Recommended Perfumes")
-    for info in perfume_info:
-        st.markdown(f"<h2 style='font-size: 28px;'>{info['name']}</h2>", unsafe_allow_html=True)
-        st.markdown(f"<p style='font-size: 18px;'>{info['price']}</p>", unsafe_allow_html=True)
-        st.markdown(f"[Buy Now]({info['link']})", unsafe_allow_html=True)
-
-
-# Streamlit Application
+# ---------------- MAIN APP ----------------
 def main():
-    # Display the logo
-    col1, col2, col3 = st.columns([1, 2, 1])  # Adjust ratios as needed
-    with col2:
-        st.image("imgperfume.jpg", width=200)  # Adjust the width as needed
 
-    st.title("AURA Fragrance Perfume Recommendation System")
-    st.write("Fill in the details below to get personalized perfume recommendations. All inputs are optional.")
+    st.markdown("<div class='main-title'>💎 AURA Fragrance AI</div>",
+                unsafe_allow_html=True)
+    st.write("### Professional AI Perfume Recommendation System")
 
-    # Initialize state
     if "state" not in st.session_state:
         st.session_state.state = PerfumeState(
             messages=[],
+            gender="Male",
+            fragrance_type="EDT",
             sweat_level=5,
             perfume_strength=5,
             preferred_scents="",
-            occasion="",
-            budget="",
-            skin_type="",
+            occasion="Casual",
+            budget="Moderate",
+            skin_type="Normal",
             additional_notes="",
-            recommendation="",
+            recommendation=""
         )
 
-    # User Inputs (Optional)
-    sweat_level = st.slider("On a scale of 1 to 10, how much do you sweat? (optional)", min_value=1, max_value=10,
-                            value=5)
-    perfume_strength = st.slider("On a scale of 1 to 10, how strong do you want the perfume to be? (optional)",
-                                 min_value=1, max_value=10, value=5)
-    preferred_scents = st.text_input("What are your preferred scents? (optional)",
-                                     placeholder="e.g., floral, woody, citrus")
-    occasion = st.selectbox("What is the occasion? (optional)", ["", "Casual", "Formal", "Evening", "Work", "Date"])
-    budget = st.selectbox("What is your budget? (optional)", ["", "Low", "Moderate", "High", "Luxury"])
-    skin_type = st.selectbox("What is your skin type? (optional)", ["", "Normal", "Oily", "Dry", "Sensitive"])
-    additional_notes = st.text_area("Optional: Provide additional notes",
-                                    placeholder="e.g., I prefer long-lasting perfumes.")
+    st.markdown("## 🧴 Personal Preferences")
 
-    # Generate recommendation button
-    if st.button("Get Perfume Recommendations"):
-        # Update state with user inputs
+    col1, col2 = st.columns(2)
+
+    with col1:
+        gender = st.selectbox("Gender", ["Male","Female","Unisex"])
+        fragrance_type = st.selectbox(
+            "Fragrance Type",
+            ["EDT (Light)", "EDP (Strong)", "Parfum (Very Strong)"]
+        )
+        sweat_level = st.slider("Sweat Level",1,10,5)
+        preferred_scents = st.text_input("Preferred Scents")
+        budget = st.selectbox("Budget",["Low","Moderate","High","Luxury"])
+
+    with col2:
+        perfume_strength = st.slider("Perfume Strength",1,10,5)
+        occasion = st.selectbox("Occasion",
+                                ["Casual","Formal","Evening","Work","Date"])
+        skin_type = st.selectbox("Skin Type",
+                                 ["Normal","Oily","Dry","Sensitive"])
+        additional_notes = st.text_area("Additional Notes")
+
+    if st.button("✨ Get Recommendations"):
+
         st.session_state.state.update({
+            "gender": gender,
+            "fragrance_type": fragrance_type,
             "sweat_level": sweat_level,
             "perfume_strength": perfume_strength,
             "preferred_scents": preferred_scents,
@@ -157,18 +192,37 @@ def main():
             "additional_notes": additional_notes,
         })
 
-        # Process optional inputs
-        st.session_state.state = process_optional_inputs(st.session_state.state)
+        state = process_optional_inputs(st.session_state.state)
 
-        # Generate recommendation
-        recommendation = create_recommendation(st.session_state.state)
+        recommendation = create_recommendation(state)
 
-        # Display the generated recommendation
-        st.subheader("Your Personalized Perfume Recommendations")
-        st.markdown(recommendation)
+        st.markdown("## 🎯 Recommended Perfumes")
 
-        # Display links for recommended perfumes
-        display_perfume_links(recommendation)
+        perfumes = parse_perfumes(recommendation)
+
+        if not perfumes:
+            st.warning("Could not parse output correctly.")
+            st.write(recommendation)
+            return
+
+        # ---- DISPLAY CARDS ----
+        for name, price, notes, best in perfumes:
+
+            amazon = f"https://www.amazon.in/s?k={name.replace(' ','+')}"
+            flipkart = f"https://www.flipkart.com/search?q={name.replace(' ','+')}"
+
+            st.markdown(f"""
+            <div class="card">
+            <h3>🧴 {name}</h3>
+            <p><b>💰 Price:</b> {price}</p>
+            <p><b>🌸 Notes:</b> {notes}</p>
+            <p><b>⭐ Best For:</b> {best}</p>
+            <p>
+            <a href="{amazon}" target="_blank">🟠 Amazon</a> |
+            <a href="{flipkart}" target="_blank">🔵 Flipkart</a>
+            </p>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
